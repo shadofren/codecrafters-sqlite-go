@@ -13,8 +13,9 @@ func main() {
 
 	switch command {
 	case ".dbinfo":
-    dbinfo := DBInfoCmd(databaseFilePath)
-		fmt.Printf("database page size: %v", dbinfo.PageSize)
+    _ = DBInfoCmd(databaseFilePath)
+	case ".tables":
+    _ = DBTablesCmd(databaseFilePath)
 	default:
 		fmt.Println("Unknown command", command)
 		os.Exit(1)
