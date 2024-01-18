@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"strings"
 )
 
 const (
@@ -32,13 +31,14 @@ type DBInfo struct {
 	Header        []byte
 	PageSize      uint16
 	ReservedSpace uint8 // usually 0, but we need to account for this
+  Tables []*SQLiteSchema
 }
 
 type SQLiteSchema struct {
 	Type     string
 	Name     string
 	TblName  string
-	RootPage uint64
+	RootPage int64
 	Sql      string
 }
 
@@ -51,47 +51,22 @@ type BTreePageHeader struct {
 	RightMostPointer            uint32
 }
 
-func DBInfoCmd(dbPath string) *DBInfo {
-	databaseFile, err := os.Open(dbPath)
-	must(err)
+func DBInfoCmd(dbPath string) {
+  info, pageHeader := readPage(dbPath, 0)
 
-	defer databaseFile.Close()
-
-	header := make([]byte, 100)
-	reader := bufio.NewReader(databaseFile)
-
-	_, err = reader.Read(header)
-	must(err)
-
-	dbinfo := &DBInfo{Header: header[:12]}
-
-	err = binary.Read(bytes.NewReader(header[16:18]), binary.BigEndian, &dbinfo.PageSize)
-	must(err)
-
-	dbinfo.ReservedSpace = header[20]
-	fmt.Println("reserved space", dbinfo.ReservedSpace)
-
-	pageHeader, n := readPageHeader(reader)
-	fmt.Printf("%+v\n", pageHeader) // we have a leaf table pageType 13
-
-	offset := 100 + n // where we are now in the reader
-	cellStarts := []uint16{}
-	// start of cell pointer array
-	for i := 0; i < int(pageHeader.NumberOfCells); i++ {
-		var p uint16
-		binary.Read(reader, binary.BigEndian, &p)
-		fmt.Println("cell", i, "offset", p)
-		cellStarts = append(cellStarts, p)
-		offset += 2
-	}
-
-	fmt.Println("database page size:", dbinfo.PageSize)
+	fmt.Println("database page size:", info.PageSize)
 	fmt.Println("number of tables:", pageHeader.NumberOfCells)
-
-	return dbinfo
 }
 
-func DBTablesCmd(dbPath string) *DBInfo {
+func DBTablesCmd(dbPath string) {
+  info, _ := readPage(dbPath, 0)
+
+  for _, table := range info.Tables {
+    fmt.Printf("%s ", table.TblName)
+  }
+}
+
+func readPage(dbPath string, page int) (*DBInfo, *BTreePageHeader) {
 	databaseFile, err := os.Open(dbPath)
 	must(err)
 
@@ -143,28 +118,20 @@ func DBTablesCmd(dbPath string) *DBInfo {
 		lastByte = int(idx)
 	}
 
-	tables := make([]string, 0)
+	tables := make([]*SQLiteSchema, 0)
 	for _, cell := range cells {
-		/* CREATE TABLE sqlite_schema( */
-		/*   type text, */
-		/*   name text, */
-		/*   tbl_name text, */
-		/*   rootpage integer, */
-		/*   sql text */
-		/* ); */
 		row := readCell(bytes.NewReader(cell))
-		// name of table is at index 1 or 2
-		if val, ok := row[2].([]byte); ok {
-      tableName := string(val)
-      if tableName == "sqlite_sequence" {
-        continue
-      }
-			tables = append(tables, tableName)
-		}
+    table := &SQLiteSchema{}
+    table.Type, _ = row[0].(string)
+    table.Name, _ = row[1].(string)
+    table.TblName, _ = row[2].(string)
+    table.RootPage, _ = row[3].(int64)
+    table.Sql, _ = row[4].(string)
+    tables = append(tables, table)
 	}
 
-	fmt.Println(strings.Join(tables, " "))
-	return dbinfo
+  dbinfo.Tables = tables
+	return dbinfo, pageHeader
 }
 
 func readCell(reader *bytes.Reader) []any {
@@ -205,7 +172,7 @@ func readCell(reader *bytes.Reader) []any {
 				size := (t - 13) / 2
 				text := make([]byte, size)
 				reader.Read(text)
-				data = append(data, text)
+				data = append(data, string(text))
 			}
 		}
 	}

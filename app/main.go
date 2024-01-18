@@ -13,9 +13,9 @@ func main() {
 
 	switch command {
 	case ".dbinfo":
-    _ = DBInfoCmd(databaseFilePath)
+    DBInfoCmd(databaseFilePath)
 	case ".tables":
-    _ = DBTablesCmd(databaseFilePath)
+    DBTablesCmd(databaseFilePath)
 	default:
 		fmt.Println("Unknown command", command)
 		os.Exit(1)
