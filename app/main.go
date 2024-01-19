@@ -1,8 +1,8 @@
 package main
 
 import (
-	"fmt"
 	"os"
+	"strings"
 	// Available if you need it!
 	/* "github.com/xwb1989/sqlparser" */)
 
@@ -17,7 +17,8 @@ func main() {
 	case ".tables":
     DBTablesCmd(databaseFilePath)
 	default:
-		fmt.Println("Unknown command", command)
-		os.Exit(1)
+    args := strings.Split(command, " ")
+    tableName := args[len(args)-1]
+    DBCountRowCmd(databaseFilePath, tableName)
 	}
 }

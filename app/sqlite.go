@@ -1,10 +1,10 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"log"
 	"os"
 )
@@ -31,7 +31,7 @@ type DBInfo struct {
 	Header        []byte
 	PageSize      uint16
 	ReservedSpace uint8 // usually 0, but we need to account for this
-  Tables []*SQLiteSchema
+	Tables        []*SQLiteSchema
 }
 
 type SQLiteSchema struct {
@@ -52,30 +52,41 @@ type BTreePageHeader struct {
 }
 
 func DBInfoCmd(dbPath string) {
-  info, pageHeader := readPage(dbPath, 0)
+	info, pageHeader := readInfo(dbPath)
 
 	fmt.Println("database page size:", info.PageSize)
 	fmt.Println("number of tables:", pageHeader.NumberOfCells)
 }
 
 func DBTablesCmd(dbPath string) {
-  info, _ := readPage(dbPath, 0)
-
-  for _, table := range info.Tables {
-    fmt.Printf("%s ", table.TblName)
-  }
+	info, _ := readInfo(dbPath)
+	for _, table := range info.Tables {
+		fmt.Printf("%s ", table.TblName)
+	}
+	fmt.Println()
 }
 
-func readPage(dbPath string, page int) (*DBInfo, *BTreePageHeader) {
-	databaseFile, err := os.Open(dbPath)
+func DBCountRowCmd(dbPath string, tablename string) {
+	info, _ := readInfo(dbPath)
+	for _, table := range info.Tables {
+		if table.Name == tablename {
+
+      pageHeader := readPage(dbPath, info, table.RootPage)
+      fmt.Println(pageHeader.NumberOfCells)
+		}
+	}
+}
+
+func readInfo(dbPath string) (*DBInfo, *BTreePageHeader) {
+
+	dbFile, err := os.Open(dbPath)
 	must(err)
 
-	defer databaseFile.Close()
+	defer dbFile.Close()
 
 	header := make([]byte, 100)
-	reader := bufio.NewReader(databaseFile)
 
-	_, err = reader.Read(header)
+	_, err = dbFile.Read(header)
 	must(err)
 
 	dbinfo := &DBInfo{Header: header[:12]}
@@ -85,62 +96,69 @@ func readPage(dbPath string, page int) (*DBInfo, *BTreePageHeader) {
 
 	dbinfo.ReservedSpace = header[20]
 
-	pageHeader, n := readPageHeader(reader)
-	fmt.Printf("%+v\n", pageHeader) // we have a leaf table pageType 13
+	// create buffer for full page
+	pageContent := make([]byte, dbinfo.PageSize)
+	_, err = dbFile.Read(pageContent[100:]) // read the content, skipping the header
+	must(err)
 
-	offset := 100 + n // where we are now in the reader
-	cellStarts := []uint16{}
+	reader := bytes.NewReader(pageContent)
+	reader.Seek(100, io.SeekStart) // skip the first 100 bytes of header
+
+	pageHeader, _ := readPageHeader(reader)
+
+	cellStarts := []int64{}
 	// start of cell pointer array
 	for i := 0; i < int(pageHeader.NumberOfCells); i++ {
 		var p uint16
 		binary.Read(reader, binary.BigEndian, &p)
-		fmt.Println("cell", i, "offset", p)
-		cellStarts = append(cellStarts, p)
-		offset += 2
-	}
-
-	fmt.Println("number of tables:", pageHeader.NumberOfCells)
-
-	unused := int(cellStarts[pageHeader.NumberOfCells-1]) - offset
-	reader.Discard(unused)
-
-	offset += unused
-
-	lastByte := int(dbinfo.PageSize - uint16(dbinfo.ReservedSpace))
-
-	cells := make([][]byte, 0)
-	cellData := make([]byte, lastByte-offset)
-	reader.Read(cellData)
-	for _, idx := range cellStarts {
-		offset = int(pageHeader.StartOfCellContent)
-		cell := cellData[int(idx)-offset : lastByte-offset]
-		cells = append(cells, cell)
-		lastByte = int(idx)
+		cellStarts = append(cellStarts, int64(p))
 	}
 
 	tables := make([]*SQLiteSchema, 0)
-	for _, cell := range cells {
-		row := readCell(bytes.NewReader(cell))
-    table := &SQLiteSchema{}
-    table.Type, _ = row[0].(string)
-    table.Name, _ = row[1].(string)
-    table.TblName, _ = row[2].(string)
-    table.RootPage, _ = row[3].(int64)
-    table.Sql, _ = row[4].(string)
-    tables = append(tables, table)
+	for _, idx := range cellStarts {
+		reader.Seek(idx, io.SeekStart)
+		row := readCell(reader)
+		table := &SQLiteSchema{}
+		table.Type, _ = row[0].(string)
+		table.Name, _ = row[1].(string)
+		table.TblName, _ = row[2].(string)
+		table.RootPage, _ = row[3].(int64)
+		table.Sql, _ = row[4].(string)
+		tables = append(tables, table)
 	}
 
-  dbinfo.Tables = tables
+	dbinfo.Tables = tables
 	return dbinfo, pageHeader
+}
+
+func readPage(dbPath string, dbinfo *DBInfo, page int64) *BTreePageHeader {
+	dbFile, err := os.Open(dbPath)
+	must(err)
+	defer dbFile.Close()
+
+	offset := (page - 1) * int64(dbinfo.PageSize)
+
+	dbFile.Seek(offset, io.SeekStart)
+	content := make([]byte, dbinfo.PageSize)
+	dbFile.Read(content)
+
+	reader := bytes.NewReader(content)
+	pageHeader, _ := readPageHeader(reader)
+
+  return pageHeader
+	/* switch pageHeader.PageType { */
+	/* case LeafTablePage: */
+ /*   */
+	/* default: */
+	/* 	fmt.Println("not supported yet") */
+	/* } */
 }
 
 func readCell(reader *bytes.Reader) []any {
 
-	length, _ := readVarint(reader)
-	rowId, _ := readVarint(reader)
+	readVarint(reader)
+	_, _ = readVarint(reader)
 	totalHeaderSize, offset := readVarint(reader)
-	fmt.Println("length is", length)
-	fmt.Println("id is", rowId)
 	// read the column Type
 	colTypes := make([]int64, 0)
 	for offset < int(totalHeaderSize) {
@@ -157,8 +175,7 @@ func readCell(reader *bytes.Reader) []any {
 			fmt.Println("NULL")
 		case INT8:
 			v, _ := reader.ReadByte()
-			data = append(data, v)
-			fmt.Printf("INT8: %d\n", v) // 1 byte
+			data = append(data, int64(v))
 		case INT16:
 			fmt.Println("INT16")
 		case INT24:
@@ -199,7 +216,7 @@ func readVarint(reader *bytes.Reader) (int64, int) {
 	return ans, byteRead
 }
 
-func readPageHeader(reader *bufio.Reader) (*BTreePageHeader, int) {
+func readPageHeader(reader *bytes.Reader) (*BTreePageHeader, int) {
 	header := BTreePageHeader{}
 	header.PageType, _ = reader.ReadByte() // single byte
 	binary.Read(reader, binary.BigEndian, &header.StartOfFirstFree)
