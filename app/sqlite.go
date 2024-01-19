@@ -7,6 +7,9 @@ import (
 	"io"
 	"log"
 	"os"
+	"strings"
+
+	"github.com/xwb1989/sqlparser"
 )
 
 const (
@@ -66,13 +69,62 @@ func DBTablesCmd(dbPath string) {
 	fmt.Println()
 }
 
-func DBCountRowCmd(dbPath string, tablename string) {
+func DBSelectCmd(dbPath string, stmt *sqlparser.Select) {
+	tableExpr := stmt.From[0].(*sqlparser.AliasedTableExpr).Expr.(sqlparser.TableName)
+	tableName := tableExpr.Name.String()
+
 	info, _ := readInfo(dbPath)
 	for _, table := range info.Tables {
-		if table.Name == tablename {
+		if table.Name != tableName {
+			continue
+		}
 
-      pageHeader := readPage(dbPath, info, table.RootPage)
-      fmt.Println(pageHeader.NumberOfCells)
+		pageHeader, headerSize, pageContent := readPage(dbPath, info, table.RootPage)
+
+		outputCols := make([]string, 0)
+		/* should be an AliasedExpr, work on 1 column right now */
+		for _, expr := range stmt.SelectExprs {
+			expr := expr.(*sqlparser.AliasedExpr).Expr
+			if _, ok := expr.(*sqlparser.FuncExpr); ok {
+				fmt.Println(pageHeader.NumberOfCells)
+				return
+			}
+			colName := expr.(*sqlparser.ColName).Name.String()
+			outputCols = append(outputCols, colName)
+		}
+
+		sql := strings.ReplaceAll(table.Sql, "autoincrement", "")
+		tableSql, err := sqlparser.Parse(sql)
+		must(err)
+		// the columns in order, then we parse the data
+		columns := tableSql.(*sqlparser.DDL).TableSpec.Columns
+		tableCols := make(map[string]int)
+    for i, col := range columns {
+      tableCols[col.Name.String()] = i
+    }
+		reader := bytes.NewReader(pageContent)
+		reader.Seek(int64(headerSize), io.SeekStart)
+		cellStarts := []int64{}
+		// start of cell pointer array
+		for i := 0; i < int(pageHeader.NumberOfCells); i++ {
+			var p uint16
+			binary.Read(reader, binary.BigEndian, &p)
+			cellStarts = append(cellStarts, int64(p))
+		}
+
+		rows := make([][]any, 0)
+		for _, idx := range cellStarts {
+			reader.Seek(idx, io.SeekStart)
+			row := readCell(reader)
+			rows = append(rows, row)
+		}
+
+		for _, outCol := range outputCols {
+			if idx, ok := tableCols[outCol]; ok {
+				for _, row := range rows {
+					fmt.Println(row[idx])
+				}
+			}
 		}
 	}
 }
@@ -81,19 +133,15 @@ func readInfo(dbPath string) (*DBInfo, *BTreePageHeader) {
 
 	dbFile, err := os.Open(dbPath)
 	must(err)
-
 	defer dbFile.Close()
 
 	header := make([]byte, 100)
-
 	_, err = dbFile.Read(header)
 	must(err)
 
 	dbinfo := &DBInfo{Header: header[:12]}
-
 	err = binary.Read(bytes.NewReader(header[16:18]), binary.BigEndian, &dbinfo.PageSize)
 	must(err)
-
 	dbinfo.ReservedSpace = header[20]
 
 	// create buffer for full page
@@ -131,7 +179,7 @@ func readInfo(dbPath string) (*DBInfo, *BTreePageHeader) {
 	return dbinfo, pageHeader
 }
 
-func readPage(dbPath string, dbinfo *DBInfo, page int64) *BTreePageHeader {
+func readPage(dbPath string, dbinfo *DBInfo, page int64) (*BTreePageHeader, int, []byte) {
 	dbFile, err := os.Open(dbPath)
 	must(err)
 	defer dbFile.Close()
@@ -143,12 +191,12 @@ func readPage(dbPath string, dbinfo *DBInfo, page int64) *BTreePageHeader {
 	dbFile.Read(content)
 
 	reader := bytes.NewReader(content)
-	pageHeader, _ := readPageHeader(reader)
+	pageHeader, headerSize := readPageHeader(reader)
 
-  return pageHeader
+	return pageHeader, headerSize, content
 	/* switch pageHeader.PageType { */
 	/* case LeafTablePage: */
- /*   */
+	/*   */
 	/* default: */
 	/* 	fmt.Println("not supported yet") */
 	/* } */
@@ -156,8 +204,8 @@ func readPage(dbPath string, dbinfo *DBInfo, page int64) *BTreePageHeader {
 
 func readCell(reader *bytes.Reader) []any {
 
-	readVarint(reader)
 	_, _ = readVarint(reader)
+	rowId, _ := readVarint(reader)
 	totalHeaderSize, offset := readVarint(reader)
 	// read the column Type
 	colTypes := make([]int64, 0)
@@ -172,7 +220,8 @@ func readCell(reader *bytes.Reader) []any {
 	for _, t := range colTypes {
 		switch t {
 		case NULL:
-			fmt.Println("NULL")
+			// this is place holder for the row Id primary index?
+			data = append(data, int64(rowId))
 		case INT8:
 			v, _ := reader.ReadByte()
 			data = append(data, int64(v))
