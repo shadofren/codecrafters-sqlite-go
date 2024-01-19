@@ -119,13 +119,20 @@ func DBSelectCmd(dbPath string, stmt *sqlparser.Select) {
 			rows = append(rows, row)
 		}
 
+    results := make([][]string, len(rows))
+
 		for _, outCol := range outputCols {
 			if idx, ok := tableCols[outCol]; ok {
-				for _, row := range rows {
-					fmt.Println(row[idx])
+				for i, row := range rows {
+          value := row[idx].(string)
+          results[i] = append(results[i], value)
 				}
 			}
 		}
+
+    for _, res := range results {
+      fmt.Println(strings.Join(res, "|"))
+    }
 	}
 }
 
