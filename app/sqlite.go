@@ -116,7 +116,9 @@ func DBSelectCmd(dbPath string, stmt *sqlparser.Select) {
 		for _, idx := range cellStarts {
 			reader.Seek(idx, io.SeekStart)
 			row := readCell(reader)
-			rows = append(rows, row)
+      if filter(row, tableCols, stmt.Where) {
+        rows = append(rows, row)
+      }
 		}
 
     results := make([][]string, len(rows))
@@ -134,6 +136,23 @@ func DBSelectCmd(dbPath string, stmt *sqlparser.Select) {
       fmt.Println(strings.Join(res, "|"))
     }
 	}
+}
+
+func filter(row []any, tableCols map[string]int, where *sqlparser.Where) bool {
+  if where == nil {
+    return true
+  }
+
+  if where, ok := where.Expr.(*sqlparser.ComparisonExpr); ok {
+    // assume to be equal
+    colName := where.Left.(*sqlparser.ColName).Name.String()
+    colValue := string(where.Right.(*sqlparser.SQLVal).Val)
+    if idx, ok := tableCols[colName]; ok {
+      value := row[idx]
+      return value == colValue
+    }
+  }
+  return false
 }
 
 func readInfo(dbPath string) (*DBInfo, *BTreePageHeader) {
@@ -201,12 +220,6 @@ func readPage(dbPath string, dbinfo *DBInfo, page int64) (*BTreePageHeader, int,
 	pageHeader, headerSize := readPageHeader(reader)
 
 	return pageHeader, headerSize, content
-	/* switch pageHeader.PageType { */
-	/* case LeafTablePage: */
-	/*   */
-	/* default: */
-	/* 	fmt.Println("not supported yet") */
-	/* } */
 }
 
 func readCell(reader *bytes.Reader) []any {
