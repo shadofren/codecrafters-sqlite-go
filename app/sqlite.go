@@ -176,6 +176,7 @@ func selectIndex(dbPath string, stmt *sqlparser.Select, info *DBInfo, index *SQL
 		}
 		i++
 	}
+  /* fmt.Println("index read", info.PageReadCount) */
 
 	if isCount {
 		fmt.Println(len(rowIds))
@@ -191,6 +192,7 @@ func selectIndex(dbPath string, stmt *sqlparser.Select, info *DBInfo, index *SQL
 	dfs = func(startRow, pageId int64, lookups []int64) {
 
 		pageHeader, pageCells := readPage(dbPath, info, pageId)
+    /* fmt.Println("read page", pageId, startRow, pageCells[len(pageCells)-1].RowId, lookups) */
 		switch pageHeader.PageType {
 		case InteriorTablePage:
 			i := 0
@@ -211,6 +213,7 @@ func selectIndex(dbPath string, stmt *sqlparser.Select, info *DBInfo, index *SQL
 				if len(subLookups) > 0 {
 					dfs(startRow, cell.LeftChildPage, subLookups)
 				}
+        startRow = endRow+1
 			}
 			if i < len(lookups) {
 				// more item on the RightMostPointer
@@ -263,7 +266,7 @@ func selectIndex(dbPath string, stmt *sqlparser.Select, info *DBInfo, index *SQL
 	for _, res := range results {
 		fmt.Println(strings.Join(res, "|"))
 	}
-
+  /* fmt.Println("page read", info.PageReadCount) */
 }
 
 func selectScan(dbPath string, stmt *sqlparser.Select, info *DBInfo, table *SQLiteSchema) {
